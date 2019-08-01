@@ -1,0 +1,665 @@
+[gd_scene load_steps=6 format=2]
+
+[sub_resource type="GDScript" id=1]
+script/source = "\"\"\"
+ Input editor that can be placed
+ within game scenes or other active
+ environments.
+\"\"\"
+extends Panel
+
+
+#Emitted when the editor has been canceled.
+signal canceled
+
+#This is the default size of the panel.
+var scaled : float = self.rect_size.length() / Vector2( 200,250 ).length()
+var percent_scaled: Vector2 = Vector2( self.rect_size.x / 200, self.rect_size.y / 250 )
+
+#Hide the player tab if only one player is active.
+export var hide_one_player : bool = true
+
+onready var hold : TabContainer = get_node( \"Container\" )
+
+
+func _ready() -> void :
+	#Hide tab if I am suppose to.
+	\"\"\"Note: If underneath says Con is not declared in the current scope,
+ 	   then you need to add the GodotInputConfigHandler as a global named Con.\"\"\"
+	if( Con.get_player_count() == 1 ) :
+		hold.tabs_visible = hide_one_player
+	
+	self.rect_pivot_offset = rect_size * 0.5
+	
+	#Set the side buttons size and positions
+	var right : Button = get_node( \"Right\" )
+	right.rect_size.x = 10 * percent_scaled.x
+	right.rect_size.y = 150 * percent_scaled.y
+	right.rect_position.x = self.rect_size.x - right.rect_size.x
+	right.rect_position.y = 60 * percent_scaled.y 
+
+	var left : Button = get_node( \"Left\" )
+	left.rect_size.x = 10 * percent_scaled.x
+	left.rect_size.y = 150 * percent_scaled.y
+	left.rect_position.y = 60 * percent_scaled.y 
+	
+	#Set popup to the correct size.
+	get_node( \"Popup\" ).set_params( self.rect_global_position, self.rect_size )
+
+
+func cancel() -> void :
+	#Revert everything back to it's setings
+	#before they this current edit.
+	Con.undo_all()
+	self.hide()
+	self.emit_signal( \"canceled\")
+
+
+func node_visible( node_name : String, is_visible : bool ) -> void :
+	if is_visible == true :
+		get_node( node_name ).show()
+	else:
+		get_node( node_name ).hide()
+	
+
+
+func start() -> void :
+	#Unhide myself and begin processing.
+	self.show()
+	
+	
+	
+	
+	
+	
+	
+"
+
+[sub_resource type="GDScript" id=2]
+script/source = "\"\"\"
+ The container for input editing tabs.
+ Has one specific job. 
+ Create however many tabs are needed.
+\"\"\"
+extends TabContainer
+
+
+const ADD_Y = 26
+
+
+func _ready():
+	self.show()
+	
+	#Configure my size based on my parent.
+	self.rect_size = get_parent().rect_size
+	self.rect_size.y += ADD_Y
+	
+	get_child( 0 ).name = \"Player0\"
+	
+	var count : int = Con.get_player_count()
+	for i in range( 1, count ) :
+		var tab : Tabs = get_child( 0 ).duplicate()
+		tab.player_id = i
+		tab.name = \"Player\" + str(i)
+		self.call_deferred( \"add_child\", tab )
+
+
+"
+
+[sub_resource type="GDScript" id=3]
+script/source = "\"\"\"
+ A tab contained within the TabContainer
+ of InputEditor.
+\"\"\"
+extends Tabs
+
+
+var player_id : int = 0
+
+
+#This is the button that we will be
+#editing the controls of.
+var setter : Button
+
+#Prevent anything from being saved or
+#another control being set.
+var can_edit : bool = true
+
+var device_menu : MenuButton
+var type_menu : MenuButton
+
+#Determines how far to place the different
+#Buttons.
+onready var panel : Panel = get_parent().get_parent()
+onready var y_sep = 30 * panel.percent_scaled.y
+
+#A bug is present that makes us multi press type_selected.
+#This should fix that.
+var is_multi_press : bool = false
+
+#This is how I handle buttons being on different pages.
+var pages : Array = [ [] ]
+var on_page : int = 0
+
+
+func _input(event) -> void:
+	#This is what actually reads the player controller
+	#after a input button has been pressed.
+	var handle : Array = Con.handle_event( player_id, event )
+	if handle.empty() :
+		return
+	
+	if Con.is_input_valid( player_id, handle ) :
+		#I can use this control.
+		Con.set_input( player_id, setter.name, handle )
+		setter.get_node( \"Text\" ).text = Con.get_input_as_text( player_id, setter.name )
+		can_edit = true
+		set_process_input( false )
+	
+	else :
+		#The input was not valid.
+		can_edit = true
+		set_process_input( false )
+		
+		#Let the popup know that I failed.
+		var text : String 
+		text = Con.make_input_into_text( handle ) + \" is used by Player \" + str( Con.is_input_in_use_by( handle ) )
+		get_tree().call_group( \"InputEditorPopup\", \"activate\", text )
+
+
+func _ready():
+	#We only use input event to get
+	#what button was pressed after a change
+	#control button is pressed.
+	set_process_input( false )
+	
+	self.call_deferred( \"make\" )
+	
+	#Listen for a controller being disconnected so I can
+	#myself accordingly.
+	Con.connect( \"joypad_disconnected\", self, \"device_disconnected\" )
+	Con.connect( \"scheme_changed\", self, \"scheme_changed\" )
+	
+	#Get button right and button left's presses.
+	panel.get_node( \"Right\" ).connect( \"pressed\", self, \"pressed_right\" ) 
+	panel.get_node( \"Left\" ).connect( \"pressed\", self, \"pressed_left\" ) 
+
+
+func button_pressed( button : Button ) -> void :
+	#A button has been pressed.
+	if can_edit == false :
+		return
+	
+	setter = button
+	can_edit = false
+	set_process_input( true )
+
+
+func device_disconnected( disc_player : int ) -> void :
+	#Update the menu and everything if the controller was disconnected.
+	pass
+
+
+func device_menu_pressed() -> void :
+	device_menu.get_popup().clear()
+	for device in Con.get_open_joypads_names( player_id ) :
+		device_menu.get_popup().add_item( device )
+
+
+func device_selected( id : int ) -> void :
+	var text = device_menu.get_popup().get_item_text( id )
+	var device_id : int = Con.get_connected_joypads_names().find( text )
+	device_menu.text = text.left( 24 )
+	if text.length() > 24 :
+		device_menu.text += \"...\"
+	
+	Con.set_control_device( player_id, device_id )
+
+
+func make( ) -> void :
+	#Start placing buttons from the top down to the bottom.
+	var pos : float = 0
+	#First make the drop down boxes for selecting control
+	#types.
+	type_menu = MenuButton.new()
+	for type in Con.get_open_schemes( player_id ) :
+		
+		type_menu.name = \"Control\"
+		type_menu.text = Con.get_control_scheme_name( player_id )
+		type_menu.get_popup().add_item( type )
+		type_menu.rect_position.y = pos
+		type_menu.visible = true
+		type_menu.connect( \"pressed\", self, \"type_menu_pressed\" )
+		type_menu.get_popup().connect( \"id_pressed\", self, \"type_selected\" )
+		self.call_deferred( \"add_child\", type_menu )
+	pos += y_sep
+	
+	device_menu = MenuButton.new()
+	var con_joy : Array = Con.get_open_joypads_names( player_id )
+	device_menu.text = Con.get_player_joypad_name( player_id )
+	device_menu.connect( \"pressed\", self, \"device_menu_pressed\" )
+	device_menu.get_popup().connect( \"id_pressed\", self, \"device_selected\" )
+	if con_joy.empty() :
+		con_joy.append( \"No available Devices\" )
+	for device in con_joy :
+		device_menu.name = \"Device\"
+		device_menu.get_popup().add_item( device )
+		device_menu.rect_position.y = pos
+		
+		#See if Con has the menu set up as a joypad.
+		if Con.is_player_using_joypad( player_id ) :
+			device_menu.text = Con.get_player_joypad_name( player_id )
+			device_menu.visible = true
+		
+		self.call_deferred( \"add_child\", device_menu )
+	pos += y_sep
+	
+	#The amount of scaling I should apply.
+	var scale : Vector2 = panel.percent_scaled
+	
+	#This is how many input buttons can fit on one page. Each button is 20 y size 
+	#with 30 pos between the tops of all buttons.
+	#220 is the cutoff point.
+	var fit_count : int = round(((220 * scale.y) - pos) / 30)
+	var input_pos : float = pos
+	var is_visible : bool = true
+	
+	#Create the input setting buttons.
+	var button : Button = get_node( \"Button\" )
+	var at : int = 0
+	var fill_page_at : int = 0
+	var at_page : int = 0
+	for action in Con.get_action_map() :
+		button.name = action
+		button.id = at
+		button.text = action.capitalize()
+		button.visible = true
+		button.rect_position.y = input_pos
+		button.display_text( player_id, action )
+		input_pos += y_sep
+		self.call_deferred( \"add_child\", button )
+		at += 1
+		var new_button : Button = button
+		button = button.duplicate()
+		
+		#Move onto the next page if we have reached then end
+		#of this one. Else, continue filling.
+		if fill_page_at == fit_count :
+			input_pos = pos + y_sep
+			new_button.rect_position.y = pos
+			at_page += 1
+			new_button.visible = false
+			pages.append( [] )
+			fill_page_at = 0
+		fill_page_at += 1
+		pages[at_page].append( new_button )
+	
+	#Remove the button I guess?
+	button.queue_free()
+	
+	#Hide the side buttons if needed.
+	panel.node_visible( \"Left\", false )
+	if pages.size() - 1 == 0 :
+		panel.node_visible( \"Right\", false ) 
+	else :
+		panel.node_visible( \"Right\", true )
+	
+	#Finally set pos down past the input buttons.
+	pos += y_sep * fit_count
+	
+	#Make a cancel button for exiting the InputEditor
+	var cancel_button : Button = Button.new()
+	cancel_button.rect_position = Vector2( 3, pos )
+	cancel_button.rect_position.x *= scale.x
+	cancel_button.name = \"Cancel\"
+	cancel_button.text = \"Cancel\"
+	cancel_button.rect_size = Vector2( 54, 20 ) * scale
+	self.call_deferred( \"add_child\",  cancel_button )
+	cancel_button.connect( \"pressed\", panel, \"cancel\" )
+	
+	#Create a save button for saving the controls.
+	var save_button : Button = Button.new()
+	save_button.rect_position = Vector2( 58, pos )
+	save_button.rect_position.x *= scale.x
+	save_button.name = \"Save\"
+	save_button.text = \"Save\"
+	save_button.rect_size = Vector2( 76, 10 ) * scale
+	self.call_deferred( \"add_child\", save_button )
+	save_button.connect( \"pressed\", self, \"save_pressed\" )
+	
+	#Make an undo button.
+	var undo_button : Button = Button.new()
+	undo_button.rect_position = Vector2( 135, pos )
+	undo_button.rect_position.x *= scale.x
+	undo_button.name = \"Undo\"
+	undo_button.text = \"Undo\"
+	undo_button.rect_size = Vector2( 54,20 ) * scale
+	self.call_deferred( \"add_child\", undo_button )
+	undo_button.connect( \"pressed\", self, \"undo_myself\" )
+
+
+func menu_pressed( menu : MenuButton, select : String ) -> void :
+	#A menubutton has been pressed.
+	if can_edit == false :
+		return
+	
+	if menu.name == \"Control\" :
+		get_node( \"Device\" ).visible = false
+		
+		if select == \"joypad\" :
+			self.get_node( \"Device\" ).visible = true
+		
+		Con.set_control_type( player_id, select )
+		setup_buttons()
+		return
+	
+	if menu.name == \"Device\" :
+		#If the device passed is already in use.
+		var dev_id : int = Con.get_device_id_from_name( select ) 
+		var guid : String = Input.get_joy_guid( dev_id )
+		if dev_id == -1 || Con.device_in_use( guid ) :
+			return
+
+
+func pressed_right() -> void :
+	#Check that I am indeed active.
+	if current_tab != player_id :
+		return
+	
+	assert on_page < pages.size() - 1
+	
+	#Hide the old buttons.
+	for button in pages[on_page] :
+		button.hide()
+	
+	on_page += 1
+	if on_page == pages.size() - 1 :
+		panel.node_visible( \"Right\", false )
+	
+	#Show the buttons we are suppose to see.
+	for button in pages[ on_page ] :
+		button.show()
+	
+	#Show the left button.
+	panel.node_visible( \"Left\", true )
+
+
+func pressed_left() -> void :
+	if current_tab != player_id :
+		return
+	
+	assert on_page > 0
+	
+	#Hide the old buttons.
+	for button in pages[on_page] :
+		button.hide()
+	
+	on_page -= 1
+	if on_page == 0 :
+		panel.node_visible( \"Left\", false )
+	
+	for button in pages[ on_page ] :
+		button.show()
+	
+	#Show the right button.
+	panel.node_visible( \"Right\", true )
+
+
+func type_menu_pressed() -> void :
+	#Update the item list.
+	type_menu.get_popup().clear()
+	for type in Con.get_open_schemes( player_id ) :
+		type_menu.get_popup().add_item( type )
+
+
+func type_selected( id : int ) -> void:
+	#I need to change scheme_changed so that it
+	#is not a slightly edited copy pasta.
+	if is_multi_press :
+		is_multi_press = false
+	else:
+		var text : String = type_menu.get_popup().get_item_text( id )
+		Con.set_control_scheme( player_id, text )
+		is_multi_press = true
+	
+	#Scheme change will respond to the scheme change
+	#and update everything as needed.
+
+
+func save_pressed() -> void :
+	if can_edit == false :
+		return
+	
+	#Check that the current controls are valid.
+	
+	#Controls are valid..
+	#Save Controls to Con.
+	Con.save()
+
+
+func setup_buttons(  ) -> void :
+	#Configure all the buttons within me
+	#so that they display the correct text.
+	
+	var input_array : Array = Con.get_control( player_id )
+	var at : int = 0
+	var loop : Array = [0]
+	for i in range( 1, Con.get_action_map_count() ) :
+		var new_i = i + 2
+		loop.append( new_i )
+	for cid in loop :
+		get_child(cid).get_node(\"Text\").text = Con.make_input_into_text( input_array[ at ] )
+		
+		
+		at += 1
+
+
+func scheme_changed( changed_player : int, scheme_name : String ) -> void :
+	#Change all the buttons if the id matches mine.
+	if changed_player != player_id :
+		return
+	
+	var scheme_id : int = -1
+	for i in range( 0, type_menu.get_popup().get_item_count() ) :
+		var check : String = type_menu.get_popup().get_item_text( i )
+		if check == scheme_name :
+			scheme_id = i
+	assert scheme_id != -1
+	
+	#Copy pasta lol.
+	var text : String = type_menu.get_popup().get_item_text( scheme_id )
+	type_menu.text = text
+	
+	setup_buttons()
+	
+	device_menu.visible = false
+	
+	if text.begins_with( \"joy\" ) :
+		device_menu.visible = true
+		device_menu.text = Con.get_player_joypad_name( player_id )
+	
+	
+func undo_myself() -> void :
+	#Undo my controls and control scheme to
+	#the last save.
+	Con.undo_player( player_id )
+	setup_buttons()
+
+
+
+
+
+
+
+
+
+
+
+"
+
+[sub_resource type="GDScript" id=4]
+script/source = "\"\"\"
+	Script for buttons to use.
+\"\"\"
+extends Button
+
+
+var id : int = -1
+
+
+func _ready():
+	self.connect( \"pressed\", self, \"pressed\" )
+	
+	var par : Panel = get_node( \"../../..\" )
+	var tex : RichTextLabel = get_child( 0 )
+	tex.rect_position.x = 134 * par.percent_scaled.x
+
+
+func display_text( player_id : int, action : String ) -> void :
+	var display : RichTextLabel = get_node( \"Text\" )
+	var show : String = Con.get_input_as_text( player_id, action )
+	display.bbcode_text = \"[center]\" + show + \"[/center]\"
+
+
+func pressed() -> void :
+	if $Text.text == \"N/A\" :
+		return
+	get_parent().button_pressed( self )
+"
+
+[sub_resource type="GDScript" id=5]
+script/source = "\"\"\"
+ The popup for InputEditor.
+ Can be used for anything.
+\"\"\"
+extends PopupDialog
+
+onready var panel : Panel = get_node( \"../\" )
+onready var text : RichTextLabel = get_node( \"Text\" )
+onready var ok : Button = get_node( \"OK\" )
+
+
+func _ready():
+	get_node( \"OK\" ).connect( \"pressed\", self, \"ok_pressed\" )
+
+
+func activate( new_text : String ) -> void :
+	#This method causes the popup to appear and
+	#makes the popup center itself in the middle of 
+	#InputEditor's back panel.
+	set_text( new_text )
+	ok.grab_focus()
+	self.show()
+
+
+func ok_pressed() -> void :
+	#Okay has been pressed. 
+	self.hide()
+
+
+func set_params( pos : Vector2, size : Vector2 ) -> void :
+	rect_size.x = size.x
+	rect_size.y = size.y * 0.20
+	rect_global_position.x = pos.x
+	rect_global_position.y = pos.y
+	rect_global_position.y += size.y * 0.5
+	
+	#Put Text in the right spot
+	text.rect_size.x = size.x
+	text.rect_position.y = self.rect_size.y * 0.25
+	
+	#Place ok at the correct spot.
+	ok.rect_size = self.rect_size * 0.1
+	ok.rect_position.y = self.rect_size.y - (ok.rect_size.y * 1.2 )
+	ok.rect_position.x = (self.rect_size.x * 0.5) - (ok.rect_size.x * 0.5)
+
+
+func set_text( new_text : String ) -> void :
+	text.bbcode_text = \"[center]\" + new_text + \"[/center]\"
+
+
+
+
+
+
+"
+
+[node name="InputEditor" type="Panel"]
+anchor_top = 0.00258642
+anchor_bottom = 0.00258642
+margin_left = 146.0
+margin_top = 10.0001
+margin_right = 346.0
+margin_bottom = 260.0
+script = SubResource( 1 )
+__meta__ = {
+"_edit_use_anchors_": false
+}
+
+[node name="Container" type="TabContainer" parent="."]
+visible = false
+margin_top = -23.6135
+margin_right = 200.0
+margin_bottom = 252.386
+tab_align = 0
+script = SubResource( 2 )
+__meta__ = {
+"_edit_use_anchors_": false
+}
+
+[node name="Tab" type="Tabs" parent="Container"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+margin_left = 4.0
+margin_top = 32.0
+margin_right = -4.0
+margin_bottom = -4.0
+script = SubResource( 3 )
+
+[node name="Button" type="Button" parent="Container/Tab"]
+visible = false
+margin_right = 12.0
+margin_bottom = 20.0
+script = SubResource( 4 )
+
+[node name="Text" type="RichTextLabel" parent="Container/Tab/Button"]
+margin_left = 134.0
+margin_right = 218.0
+margin_bottom = 40.0
+bbcode_enabled = true
+
+[node name="Popup" type="PopupDialog" parent="." groups=[
+"InputEditorPopup",
+]]
+margin_right = 97.0
+margin_bottom = 40.0
+script = SubResource( 5 )
+
+[node name="Text" type="RichTextLabel" parent="Popup"]
+margin_right = 40.0
+margin_bottom = 40.0
+bbcode_enabled = true
+
+[node name="OK" type="Button" parent="Popup"]
+margin_right = 12.0
+margin_bottom = 20.0
+text = "OK"
+
+[node name="Left" type="Button" parent="."]
+visible = false
+margin_top = 60.0
+margin_right = 12.0
+margin_bottom = 210.0
+__meta__ = {
+"_edit_use_anchors_": false
+}
+
+[node name="Right" type="Button" parent="."]
+visible = false
+margin_left = 188.0
+margin_top = 60.0
+margin_right = 200.0
+margin_bottom = 210.0
+__meta__ = {
+"_edit_use_anchors_": false
+}

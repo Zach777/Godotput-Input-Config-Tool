@@ -1,0 +1,1507 @@
+[gd_scene load_steps=3 format=2]
+
+[sub_resource type="GDScript" id=1]
+script/source = "\"\"\"
+ Handles control setup and editing.
+\"\"\"
+extends Node
+
+\"\"\"
+ Brief tutorial:
+	Use the child node Default's script for creating the 
+	default controls.
+	
+	The type of controller you are using is known as a scheme.
+	The keyboard layout is a scheme.
+	
+	What inputs you actually have is known as a control.
+	
+	The inputs in a player's controls are contained in an array.
+	The array is called an input array.
+\"\"\"
+
+
+
+#This is what all actions there are in the game.
+export var action_map : Array = [\"Confirm\", \"Cancel\", \"MoveUp\", \"MoveRight\", \"MoveDown\",\"MoveLeft\"]
+
+#This lets me navigate menus.
+export var ui_actions : Dictionary = { \"ui_accept\" : [ \"Confirm\"], \"ui_select\" : [], 
+										\"ui_cancel\" : [ \"Cancel\"], \"ui_focus_next\" : [],
+										\"ui_focus_prev\" : [], \"ui_left\" : [\"MoveLeft\"],
+										\"ui_right\" : [\"MoveRight\"], \"ui_up\" : [\"MoveUp\"],
+										\"ui_down\" : [\"MoveDown\"], \"ui_page_up\" : [],
+										\"ui_page_down\" : [], \"ui_home\" : [],
+										\"ui_end\" : [] }
+
+var ui_events : Array = []
+
+#This lets me preserve the ui actions as they were at start.
+var beginning_ui_counts : Array = [] 
+
+#This is for determining what control types
+#are allowed to be used.
+export var use_keyboard : bool = true
+export var use_key_and_mouse : bool = false
+export var use_joypad : bool = true
+export var use_joy_and_mouse : bool = false
+export var use_mouse : bool = false
+
+#This determines which control types are selected first.
+export var keyboard_priority : int = 2
+export var key_and_mouse_priority : int = 3 
+export var joy_and_mouse_priority : int = 4
+export var joypad_priority : int = 0
+export var mouse_priority : int = 1
+
+#How many players will be in a game.
+export var player_count : int = 2
+
+#Should we allow a player to have the same input for multiple actions?
+export var allow_duplicate_inputs : bool = false
+
+export var allow_not_set_inputs : bool = false
+
+#Should I immediately assign a new scheme when
+#a player is disconneced or not?
+#This can be changed while the game is running.
+export var auto_assign_disconnect : bool = true
+
+#This determines if I can use events for an input
+#when an input is by default invalid.
+export var overwrite_invalids : bool = false
+
+signal joypad_connected
+signal joypad_disconnected
+signal scheme_changed #A control scheme has been changed.
+signal player_disconnected #A player's controller was disconnected.
+
+#These are for getting the correct value
+#in controls and control_schemes.
+const AXIS = 1
+const AXIS_DIR = 2
+const BUTTON = 1
+const CONTROL_NAME = 0
+const DEADZONE = 3
+const SCANCODE = 1
+const SCHEME_NAME = 0
+const DEVICE_GUID = 1
+const DEVICE_ID = 2
+
+var input : Input = Input
+
+#Stores all connected joypads.
+var con_joy : Array = input.get_connected_joypads()
+var guid_joy : Array = []
+
+#This variable allows me to handle controller
+#port changes mid game.
+var disc_players : Array = []
+
+#The file that stores what controls were used last.
+var file : File = File.new()
+const FILE_LOCATION = \"res://addons/godotput/TempControl\"
+
+#The node that has the settings for the default controls.
+onready var def : Node = get_node( \"Defaults\" )
+
+#This is what controls the players are using.
+var controls : Array
+
+#This is the control types the players are using.
+var control_schemes : Array = []
+
+#This lets me go back to my previous control and types.
+var undo_controls : Array = []
+var undo_schemes : Array = []
+
+
+func _process( delta ) -> void :
+	#Check if any controllers were connected or
+	#disconnectec.
+	var joypads : Array = input.get_connected_joypads()
+	
+	#A joypad has been disconnected.
+	if joypads.size() < con_joy.size() :
+		#What was the guid of the disconnected controller?
+		var guids : Array = []
+		
+		for con in joypads :
+			var guid : String = Input.get_joy_guid( con )
+			guids.append( guid )
+		
+		#Determine what controller was dicsonnected.
+		var device_id : int = 0
+		for guid in guid_joy :
+			if guids.has( guid ) == false :
+				emit_signal( \"joypad_disconnected\", device_id, guid )
+			device_id += 1
+		
+		#Update the guid list.
+		guid_joy.clear()
+		for joy in joypads :
+			guid_joy.append( input.get_joy_guid( joy ) )
+	
+	#A joypad has been connected
+	elif joypads.size() > con_joy.size() :
+		var guids : Array = []
+		
+		for con in joypads :
+			var guid : String = Input.get_joy_guid( con )
+			guids.append( guid )
+		
+		var at : int = 0
+		for guid in guids :
+			if guid_joy.has( guid ) == false :
+				emit_signal( \"joypad_connected\", at, guid )
+			
+			at += 1
+		
+		#Update the guid list.
+		guid_joy.clear()
+		for joy in joypads :
+			guid_joy.append( input.get_joy_guid( joy ) )
+
+	con_joy = joypads
+
+
+func _ready():
+	#Get the ui count ready so we can preserve ui events
+	var map = InputMap
+	beginning_ui_counts.append( map.get_action_list(\"ui_accept\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_select\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_cancel\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_focus_next\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_focus_prev\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_left\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_right\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_up\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_down\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_page_up\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_page_down\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_home\").size() - 1 ) 
+	beginning_ui_counts.append( map.get_action_list(\"ui_end\").size() - 1 ) 
+	
+	#Give ui_events all the arrays it will need.
+	for p in range( 0, player_count ) :
+		var player_array : Array = []
+		for a in range( 0,13 ) :
+			var action_array : Array = []
+			for event in ui_actions.keys()[a] :
+				action_array.append( null )
+			player_array.append( action_array )
+		ui_events.append( player_array )
+	
+	_setup()
+	
+	self.connect( \"joypad_connected\", self, \"joypad_connected\" )
+	self.connect( \"joypad_disconnected\", self, \"joypad_disconnected\" )
+	self.connect( \"player_disconnected\", self, \"player_disconnected\" )
+
+
+func _setup():
+	#Set up everything.
+	for x in range( 0, player_count ) :
+		controls.append( [] )
+		control_schemes.append( [] )
+	
+	for player in controls :
+		for action in action_map :
+			player.append( [def.NOT_SET] )
+	
+	#Store the connected controllers.
+	con_joy = Input.get_connected_joypads()
+	for joy in con_joy :
+		guid_joy.append( input.get_joy_guid( joy ) )
+	
+	#Get the input map to actually contain
+	#the necessary actions in the first place.
+	var at : int = 0
+	while at < player_count :
+		for action in def.map :
+			InputMap.add_action( str(at)+action )
+		
+		at += 1
+
+	#Load what control settings were used
+	#for the players last time.
+	if file.file_exists( FILE_LOCATION ) :
+		load_controller_file()
+
+	#If none exists, make one and load
+	#the default controls based on what
+	#is connected.
+	else :
+		
+		first_controller_init()
+	
+	#Setup undo controls.
+	save()
+
+
+func are_all_inputs_set() -> bool :
+	#Return true if there are no inputs
+	#that have the Not Set name.
+	for player in controls :
+		if player[ CONTROL_NAME ] == def.NOT_SET :
+			return false
+	
+	#All inputs are set.
+	return true
+
+
+func device_in_use( guid : String ) -> bool :
+	#Return whether or not the passed device
+	#is in use.
+	if device_in_use_by( guid ) > -1 :
+		return true
+	return false
+
+
+func device_in_use_by( guid : String ) -> int :
+	#Return which player is using the passed joypad.
+	var at : int = 0
+	for t in control_schemes :
+		if t[ SCHEME_NAME ] == \"joypad\" :
+			if t[ DEVICE_GUID ] == guid :
+				return at
+		
+		#Move onto the next player.
+		at += 1
+	
+	#No one is using the passed joypad.
+	return -1
+
+
+func control_in_use( player_id : int, scheme : String, event : InputEvent, device_id : int = 0 ) -> bool :
+	var ret : bool = false
+	if control_in_use_by( player_id, scheme, event, device_id ) > -1 :
+		ret = true
+	return ret
+
+
+func control_in_use_by( player_id : int, scheme : String, event : InputEvent, device_id : int = 0 ) -> int :
+	#Return who is using the pressed button.
+	var at : int = 0
+	while at < control_schemes.size() :
+		if control_schemes[at][0] == scheme :
+			#Same control scheme. Get what button
+			#the event scheme is.
+			for con in controls[at] :
+				var compare : Array = []
+				var against : Array = []
+				if event is InputEventJoypadButton|| event is InputEventJoypadMotion :
+					if control_schemes[at][ DEVICE_ID ] == device_id :
+						if event is InputEventJoypadButton :
+							compare.append(event.button_index)
+							if con[1] == def.JOY_BUTTON :
+								against.append( con[BUTTON] )
+							
+						else:
+							compare.append( event.axis )
+							compare.append( event.axis_value )
+							if con[1] == def.JOY_MOTION :
+								against = [ con[AXIS],con[AXIS_DIR] ]
+						
+					else:
+						#Controller is not the same.
+						compare.append(-500)
+				
+				if event is InputEventKey :
+					compare.append( event.scancode )
+					against.append( con[ BUTTON ] )
+				if event is InputEventMouseButton :
+					compare.append( event.button_index )
+					against.append( con[BUTTON] )
+				
+				#Actually check that the buttons work.
+				for a in compare :
+					for b in against :
+						if a == b :
+							return at
+				
+				pass
+		
+		#Move onto the next player.
+		at += 1
+	return -1
+
+
+func first_controller_init() -> void :
+	#Create the contro; fo;e for the first time or create
+	#it after a failure of a previous control file.
+	var priority_array : Array = [keyboard_priority,key_and_mouse_priority,
+			joypad_priority, joy_and_mouse_priority,mouse_priority ]
+	var type_names : Array = [\"keyboard\", \"key_and_mouse\", \"joypad\", 
+			\"joy_and_mouse\", \"mouse\" ]
+	#Add only the types that are active.
+	if true:
+		var remove : Array = []
+		var at : int = 0
+		for scheme in type_names :
+			if get( \"use_\"+scheme ) == false :
+				var new : int = at
+				remove.append( at )
+			at += 1
+		
+		var i : int = remove.size() - 1
+		while i >= 0:
+			priority_array.remove( remove[i] )
+			type_names.remove( remove[i] )
+			i -= 1
+	
+	#Assign the controllers to the players.
+	var joy_count : int = get_joypad_count()
+	var mouse_used : bool = false
+	for i in range( 0, player_count ) :
+		#Assign the fist available controller
+		#to the players.
+		var use : int = 0
+		var found_con : bool = false
+		var low_bound : int = -100
+		while found_con == false :
+			#Find what con scheme has the most priority.
+			var at : int = 0
+			var current : int = 100
+			for p in priority_array :
+				if p <= low_bound :
+					pass
+				elif p <= current :
+					use = at
+					current = priority_array[ at ]
+				at += 1
+			
+			#Check that the found con scheme is usable.
+			#Potential scheme is mouse.
+			if type_names[ use ].ends_with( \"mouse\" ) :
+				if mouse_used == false :
+					if type_names[ use ] == \"joy_and_mouse\" :
+						if joy_count > 0 :
+							joy_count -= 1
+							found_con = true
+							mouse_used = true
+					else:
+						mouse_used = true
+						found_con = true
+						low_bound = priority_array[ use ]
+				
+				#Can't use the mouse lol.
+				else :
+					low_bound = priority_array[ use ]
+				
+			#The scheme is a joypad
+			elif type_names[ use ] == \"joypad\" :
+				if joy_count > 0 :
+					joy_count -= 1
+					found_con = true
+				else:
+					low_bound = priority_array[ use ]
+			
+			#The scheme is keyboard.
+			else :
+				found_con = true
+		
+		#We have found the correct controller.
+		#Save the player's control.
+#		set_control( i,def.call( \"get_\" + type_names[ use ] ) )
+		
+		#Add the correct control scheme.
+		set_control_scheme_using_array( i, get_template_scheme( type_names[ use ], 
+				Input.get_connected_joypads().size() - (joy_count + 1) ) )
+
+
+func get_action_event( player_id : int, action : String ) -> InputEvent :
+	\"\"\"Maybe\"\"\"
+	return InputMap.get_action_list( str(player_id)+action)[0]
+
+
+func get_action_map() -> Array :
+	#Return the names of all actions setup up in Con.
+	return def.map
+
+
+func get_action_map_count() -> int :
+	#Return the amount of action in the action map.
+	return def.map.size()
+
+
+func get_connected_joypads_names() -> Array :
+	#Return a list of all connected joypads' names.
+	var ret : Array = []
+	for joy in Input.get_connected_joypads() :
+		ret.append( Input.get_joy_name( joy ) )
+	
+	return ret
+
+
+func get_control( player_id : int ) -> Array :
+	#Get a specific control and all the inputs that go with it.
+	return controls[ player_id ]
+
+
+func get_control_scheme_array( id : int ) -> Array :
+	return control_schemes[id]
+
+
+func get_control_scheme_name( id : int ) -> String :
+	#Return the name of the control scheme the player is using.
+	return control_schemes[ id ][SCHEME_NAME]
+
+
+func get_device( id : int ) -> int :
+	#Returns the device specified by player ID.
+	var guid : String = get( \"p\"+str(id)+\"_control\" )[ \"Device\" ]
+	var dev : int = guid_joy.find( guid )
+	return dev
+
+
+func get_device_id_from_name( device_name : String ) -> int :
+	for dev in Input.get_connected_joypads() :
+		if Input.get_joy_name( dev ) == device_name :
+			return dev
+	return -1
+
+
+func get_input_as_text( player_id : int, input_name : String ) -> String :
+	#Return the passed input as a string you can use for
+	#input display.
+	#Note that invalid inputs will return \"N/A\"
+	#and joypad axis movements will return \"Axis \" + id of axis with the sign of
+	#the axis value.
+	var loc : int = def.map.find( input_name )
+	return make_input_into_text( controls[ player_id ][ loc ] )
+
+
+func get_input_as_text_using_id( player_id : int, input_id : int ) -> String :
+	#Do what get_input_as_text does but 
+	#use an integer representing where the input
+	#is in the input map to get the text.
+	var ret : String
+	ret = get_input_as_text( player_id, def.map[ input_id ] )
+	return ret
+
+
+func get_joypad_count() -> int :
+	#Return how many joypads are connected.
+	return Input.get_connected_joypads().size()
+
+
+func get_open_joypads( exclude_player : int = -1 ) -> int :
+	#Return how many available joypads there are.
+	return get_open_joypads_ids( exclude_player ).size()
+
+
+func get_open_joypads_ids( exclude_player : int = -1) -> Array :
+	#Return an array of all available joypads.
+	#Available means that only the controllers that do
+	#not have a player associated are returned.
+	#Exclude player means show the joypad
+	#that this player may have equipped.
+	var at : int = 0
+	var ret : Array = Input.get_connected_joypads()
+	for scheme in control_schemes :
+		if( scheme[ SCHEME_NAME ].begins_with( \"joy\" ) &&
+				exclude_player != at ) :
+			ret.remove( ret.find( scheme[ DEVICE_ID ] ) )
+		
+		#Move onto the next player.
+		at += 1
+	
+	return ret
+
+
+func get_open_joypads_names( exclude_player : int = -1 ) -> Array :
+	#Return a list of names of all open joypads.
+	#Excluding the player's controller.
+	var joy_ids : Array = get_open_joypads_ids( exclude_player )
+	var ret := []
+	for id in joy_ids :
+		ret.append( Input.get_joy_name( id ) )
+	return ret
+
+
+func get_open_schemes_by_priority() -> Array :
+	#Return an array of all schemes ordered by the dictionary scheme_order
+	var priority_array : Array = [keyboard_priority,key_and_mouse_priority,
+			joypad_priority, joy_and_mouse_priority,mouse_priority ]
+	var scheme_names : Array = [\"keyboard\", \"key_and_mouse\", \"joypad\", 
+			\"joy_and_mouse\", \"mouse\" ]
+	#Add only the types that are active.
+	if true:
+		var remove : Array = []
+		var at : int = 0
+		for scheme in scheme_names :
+			if( get( \"use_\"+scheme ) == false ||
+					(scheme.begins_with( \"joy\" ) && get_open_joypads_ids().empty()) ||
+					(scheme.begins_with( \"mouse\" ) && mouse_in_use() ) ) :
+				var new : int = at
+				remove.append( at )
+			at += 1
+		
+		var i : int = remove.size() - 1
+		while i >= 0:
+			priority_array.remove( remove[i] )
+			scheme_names.remove( remove[i] )
+			i -= 1
+	
+	#Order the scheme_name array by the priority of the pieces.
+	var ret : Array = [\"keyboard\"]
+	var compare : Array = [keyboard_priority]
+	var i : int = 1
+	while i < priority_array.size() :
+		var priority : int = priority_array[i]
+		var append_at : int = 0
+		var target_size : int = compare.size()
+		while append_at < target_size :
+			var in_compare : int = compare[ append_at ]
+			if priority < in_compare :
+				compare.insert( append_at, priority )
+				ret.insert( append_at, scheme_names[ i ] )
+			#We are the largest scheme.
+			elif append_at == compare.size() - 1 :
+				compare.push_back( priority )
+				ret.push_back( scheme_names[i] )
+			append_at += 1
+		i += 1
+	
+	return ret
+
+
+func get_open_schemes( exclude_player : int = -1) -> Array :
+	#Return the names of the available schemes.
+	var ret : Array = []
+	
+	if mouse_in_use( exclude_player ) == false :
+		if use_mouse :
+			ret.append( \"mouse\" )
+		if use_key_and_mouse :
+			ret.append( \"key_and_mouse\" )
+		
+	
+	if get_open_joypads( exclude_player ) > 0 :
+		if use_joy_and_mouse && mouse_in_use( exclude_player ) == false :
+			ret.append( \"joy_and_mouse\" )
+		if use_joypad :
+			ret.append( \"joypad\" )
+	
+	if use_keyboard :
+		ret.append( \"keyboard\" )
+	
+	#Organize the list based on the priority of 
+	#the individual types.
+	
+	
+	return ret
+
+
+func get_player_count() -> int :
+	#Return how many players there are.
+	return player_count
+
+
+func get_player_joypad_name( player_id : int ) -> String :
+	#Return the name of the joypad the player is using.
+	#This method will fail if the player_id specified
+	#is not using a joypad.
+	if control_schemes[ player_id][SCHEME_NAME].begins_with( \"joy\" ) == false :
+		return \"\"
+	return Input.get_joy_name( control_schemes[ player_id ][ DEVICE_ID ] )
+
+
+func get_player_profile( id : int ) -> Dictionary :
+	#Returns the array of controls.
+	var ret_dic : Dictionary
+	ret_dic = { \"scheme\" : control_schemes[id], \"controls\" : controls[id] }
+	
+	return ret_dic
+
+
+func get_template_control( scheme_name : String ) -> Array :
+	#Return the default inputs of the passed scheme.
+	return def.call( \"get_\"+scheme_name )
+
+
+func get_template_scheme( get_scheme : String, device_id : int = -1) -> Array :
+	#Return how the scheme array is suppose to look
+	#Do not confuse this with get_template_control as that
+	#method is meant to return inputs. 
+	# This method returns only the scheme itself.
+	if get_scheme.begins_with( \"joy\" ) :
+		#Assign the available controller if there is none.
+		if device_id == -1 :
+			device_id = get_open_joypads_ids()[0]
+		return [get_scheme, Input.get_joy_guid( device_id ), device_id ]
+	else:
+		return [get_scheme]
+
+
+func get_undo_control( player_id : int ) -> Array :
+	#Return the previous control type of the player passed.
+	return undo_controls[ player_id ]
+
+
+func get_undo_scheme( player_id : int ) -> Array :
+	#Return the previous scheme of the passed player.
+	return undo_schemes[ player_id ]
+
+
+func handle_event( player_id : int, event : InputEvent ) -> Array :
+	#Returns an input array.
+	#The array is empty if the event cannot be used.
+	if( event is InputEventKey &&
+			control_schemes[ player_id ][SCHEME_NAME ].begins_with( \"key\" ) ) :
+		return [ def.KEYBOARD, event.scancode ]
+	
+	elif( event is InputEventJoypadButton &&
+			control_schemes[ player_id ][ SCHEME_NAME ].begins_with( \"joy\" ) ) :
+		return [def.JOYPAD_BUTTON, event.button_index ]
+	
+	elif( event is InputEventJoypadMotion &&
+			control_schemes[ player_id ][ SCHEME_NAME ].begins_with( \"joy\" ) ) :
+		return [def.JOYPAD_MOTION, event.axis, event.axis_value, 0.1 ]
+	
+	elif( event is InputEventMouseButton &&
+			control_schemes[ player_id ][ SCHEME_NAME ].ends_with( \"mouse\" ) ) :
+		return [def.MOUSE_BUTTON, event.button_index ]
+	
+	return []
+
+
+func input_to_default( action_at : int, player_id : int, scheme : String ) -> void :
+	#Set the specified input to the first available default input.
+	#If none are available, then set the input to Not set.s
+	\"\"\"This crashes because I am assuming that
+	controls is already set up.\"\"\"
+	var template : Array = def.call( \"get_\" + scheme, 0 )
+	pass
+	template = template[ action_at ]
+	var try : int = 1
+	while is_input_in_use( template ) :
+		template = def.call( \"get_\" + scheme, try )[ action_at ]
+		try += 1
+	controls[ player_id ][ action_at ] = template
+
+
+func is_control_valid( player_id : int ) -> bool :
+	#Return whether the passed player has a control
+	#that can be saved or not.
+	for input in controls[ player_id ] :
+		var valid : bool = is_input_valid( player_id, input )
+		if valid == false :
+			return false
+	
+	return true
+
+
+func is_input_in_use( check_input : Array ) -> bool :
+	if is_input_in_use_by( check_input ) > -1 :
+		return true
+	return false
+
+
+func is_input_in_use_by( check_input : Array ) -> int :
+	#Return whether the passed input is in use or not.
+	var at : int = 0
+	for player_control in controls :
+		for input in player_control :
+			if( input[ CONTROL_NAME ] == def.NOT_SET 
+					|| input[ CONTROL_NAME ] == def.INVALID ) :
+				pass
+			
+			elif( input[ CONTROL_NAME ] == check_input[ CONTROL_NAME ] &&
+					input[ BUTTON ] == check_input[ BUTTON ] ) :
+				if( input[ CONTROL_NAME ] != def.JOYPAD_MOTION ||
+						input[ AXIS_DIR ] == check_input[ AXIS_DIR ] ) :
+					return at
+		
+		#Move onto the next player
+		at += 1
+	
+	return -1
+
+
+func is_input_valid( player_id : int, input ) -> bool :
+	#Return true if the input passed is valid with the settings of Con.
+	
+	#Check that the input belongs to the right scheme.
+	var hi : String =  control_schemes[ player_id ][ SCHEME_NAME ]
+	if control_schemes[ player_id ][ SCHEME_NAME ].begins_with( \"joy\" ) :
+		if( input[ CONTROL_NAME ] !=  def.JOYPAD_BUTTON ||
+			input[ CONTROL_NAME ] != def.JOYPAD_MOTION ) :
+			if( control_schemes[ player_id ][ SCHEME_NAME ].ends_with( \"mouse\" ) == false ) :
+				return false
+			else :
+				if input[ CONTROL_NAME ] != def.MOUSE_BUTTON :
+					return false
+	
+	if control_schemes[ player_id ][ SCHEME_NAME ].begins_with( \"key\" ) :
+		if input[ CONTROL_NAME ] !=  def.KEYBOARD :
+			if( control_schemes[ player_id ][ SCHEME_NAME ].ends_with( \"mouse\" ) == false ) :
+				return false
+			else :
+				if input[ CONTROL_NAME ] != def.MOUSE_BUTTON :
+					return false
+	
+	if( allow_not_set_inputs == false &&
+				input[ CONTROL_NAME ] == def.NOT_SET ) :
+		return false
+		
+	#Get who is also using this control.
+	var by : int = is_input_in_use_by( input )
+	if( by != -1 &&
+			by != player_id ) :
+		return false
+	
+	elif( allow_duplicate_inputs == false &&
+			by == player_id ) :
+		return false
+	
+	return true
+
+
+func is_player_using_joypad( player_id : int ) -> bool :
+	#Return true if the player passed is using a joypad.
+	if control_schemes[player_id][SCHEME_NAME].begins_with( \"joy\" ) :
+		return true
+	return false
+
+
+func joypad_connected( device_id : int, guid : String ) -> void :
+	#A new controller has been added.
+
+	#If there is someone who has their controller
+	#disconnected, set the newly connected controller
+	#as their's.
+	if disc_players.size() >= 1 :
+		#Configure the first disconnected player's
+		#controls to use the newly connected joypad.
+		set_control_device( disc_players[0], device_id )
+
+
+func joypad_disconnected( device_id : int, device_guid : String ) -> void :
+	#Check if the disconnected controlller was
+	#being used by the players.
+	var at : int = 0
+	for p in control_schemes :
+		if( p[ SCHEME_NAME ] == \"joypad\" &&
+				p[ DEVICE_GUID] == device_guid ) :
+			#This player's controller was disconnected.
+			disc_players.append( at )
+			emit_signal( \"player_disconnected\", at )
+		
+		at += 1
+
+
+func joypad_in_use( guid : String ) -> bool :
+	#Return true if the joypad is currently in use
+	#by a player.
+	var in_use : bool = false
+	for con in control_schemes :
+		if con[SCHEME_NAME] == \"joypad\" :
+			if guid == con[DEVICE_GUID] :
+				in_use = true
+				break
+	
+	return in_use
+
+
+func joypad_in_use_by( guid : String ) -> int :
+	#Return true if the joypad is currently in use
+	#by a player.
+	var used_by : int = -1
+	var at : = 0
+	for con in control_schemes :
+		if con[SCHEME_NAME] == \"joypad\" :
+			if guid == con[DEVICE_GUID] :
+				used_by = at
+				break
+	
+	return used_by
+
+
+func load_controller_file() :
+	#Load the control file.
+	#This method assumes that the controller
+	#file exists.
+	#This method will not use a loaded scheme
+	#and scheme if the necessary devices
+	#are not connected or unavailable.
+	#First check that it is valid.
+	file.open( FILE_LOCATION, file.READ_WRITE )
+	var at_save : int = 0
+	while not file.eof_reached() :
+		var line : String = file.get_line()
+		if not parse_json( line ) is Array :
+			file.close()
+			first_controller_init()
+			return
+		
+		#Verify that the line has the correct 
+		#number of elements.
+		#$TODO : I need to check that the variable I am comparing is the correct variable.
+		if at_save == 0 :
+			#We are verifying the controls arrays.
+			for player in parse_json( line ) :
+				#Make sure I have the correct
+				#input size.
+				if player.size() != action_map.size() :
+					file.close()
+					first_controller_init()
+					return
+				
+				for input in player :
+					if input.empty() :
+						file.close()
+						first_controller_init()
+						return
+					
+					if not input[ 0 ] is float :
+						file.close()
+						first_controller_init()
+						return
+					
+					if input[ CONTROL_NAME ] == def.INVALID :
+						#The input is Invalid, make sure the
+						#actual control is suppose to be invalid.
+						pass
+					
+					elif input.size() != def.verify[ input[ CONTROL_NAME ] ] :
+						file.close()
+						first_controller_init()
+						return
+		
+		else :
+			for player in parse_json( line ) :
+				#We are checking schemes.
+				#Make sure the scheme has the correct size.
+				if player.size() == 1 :
+					if not player[ 0 ] is String :
+						file.close()
+						first_controller_init()
+						return
+					
+					#Make sure that the scheme is not
+					#a joypad. If it is, then the scheme does
+					#not have the correct amount of elements.
+					if player[ 0 ].begins_with( \"joy\" ) :
+						file.closed()
+						first_controller_init()
+						return
+					
+				elif player.size() == 3 :
+					if not player[ 0 ] is String :
+						file.close()
+						first_controller_init()
+						return
+					if not player[ 1 ] is String :
+						file.close()
+						first_controller_init()
+						return
+					if not player[ 2 ] is float :
+						file.close()
+						first_controller_init()
+						return
+				else :
+					file.close()
+					first_controller_init()
+					return
+		
+		#Move onto the next line.
+		at_save += 1
+	file.seek( 0 )
+	
+	#Load the contents of the file.
+	var loaded_controls : Array = parse_json( file.get_line() )
+	var loaded_schemes : Array = parse_json( file.get_line() )
+	file.close()
+	
+	#Check that the connected devices are present.
+	#Use the device if it was used before.
+	#Else, use another device.
+	var inc : int = 0
+	for scheme in loaded_schemes :
+		if scheme[ SCHEME_NAME ] == \"joypad\" :
+			#Find the controller used last time.
+			#if it is not there, use
+			#another one not currently in use.
+			var at : int = 0
+			var need_new : bool = true
+			for guid in guid_joy :
+				if guid == scheme[ DEVICE_GUID ] :
+					scheme[ DEVICE_ID ] = at
+					need_new = false
+					break
+				
+				at += 1
+			
+			#I need a new controller.
+			if need_new :
+				var p_guids : Array = []
+				for t in loaded_schemes :
+					if t[ SCHEME_NAME ].begins_with( \"joy\" ) :
+						p_guids.append( t[ DEVICE_GUID ] )
+				var has_new_joy : bool = false
+				at = 0
+				for guid in guid_joy :
+					if not p_guids.has( guid ) :
+						has_new_joy = true
+						break
+					at += 1
+				
+				#There is no new joypad for me to use.
+				if has_new_joy == false :
+					var mouse_used : bool = false
+					for t in loaded_schemes :
+						if t[ SCHEME_NAME ] == \"mouse\" :
+							mouse_used = true
+					
+					if mouse_used :
+						loaded_controls[inc] = def.get_keyboard()
+						loaded_schemes[inc][SCHEME_NAME] = \"keyboard\"
+					else:
+						loaded_controls[inc] = def.get_mouse()
+						loaded_controls[inc][SCHEME_NAME] = \"mouse\"
+					
+					#Remove the variables that are not needed.
+					loaded_schemes[inc].pop_back()
+					loaded_schemes[inc].pop_back()
+					var hi = loaded_schemes[inc]
+				
+				#There is an open controller yay.
+				#At is our marker for what controller to use.
+				else:
+					loaded_schemes[ inc ][ DEVICE_GUID ] = Input.get_joy_guid( at )
+					loaded_schemes[ inc ][ DEVICE_ID ] = at
+					for event in loaded_controls[inc] :
+						event.device = at
+		#Move onto the next scheme.
+		inc += 1
+	
+	#Set control types and controls to the loaded ones.
+	control_schemes = loaded_schemes
+	controls = loaded_controls
+	
+	#Make sure I have the correct player count.
+	if controls.size() < player_count :
+		var add : int = player_count - control_schemes.size()
+		while add > 0 :
+			var new_scheme = get_open_schemes_by_priority()[0]
+			controls.append( get_template_control( new_scheme ) )
+			control_schemes.append( get_template_scheme( new_scheme ) )
+			add -= 1
+	
+	elif controls.size() > player_count :
+		controls.resize( player_count )
+		control_schemes.resize( player_count )
+	
+	#Make sure all players have as many inputs as needed.
+	if controls[ 0 ].size() != action_map.size() :
+		#I assume all players don't have enough inputs.
+		var player : int = 0
+		while player < player_count :
+			var add_input : int = loaded_controls[ player ].size() - 1
+			var control : Array = get_template_control( loaded_schemes[ player][ SCHEME_NAME ] )
+			var target : int = control.size() - 1
+			
+			#Get add_input to target.
+			while add_input < target :
+				loaded_controls[ player ].push_back( control[ add_input + 1 ] )
+				add_input += 1
+			
+			player += 1
+
+
+func make_input_into_text( input : Array ) -> String :
+	#Return a string of the input passed.
+	if input[ CONTROL_NAME ] == def.JOYPAD_MOTION :
+		return \"Axis \" + str( input[ AXIS ] * sign( input[ AXIS_DIR ] ) )
+	
+	elif input[ CONTROL_NAME ] == def.KEYBOARD :
+		var event : InputEventKey = InputEventKey.new()
+		event.scancode = input[ BUTTON ]
+		return event.as_text()
+	
+	elif input[ CONTROL_NAME ] == def.INVALID :
+		return \"N/A\"
+	
+	elif input[ CONTROL_NAME ] == def.MOUSE_BUTTON :
+		return \"Mouse \" + str( input[ BUTTON ] )
+	
+	elif input[ CONTROL_NAME ] == def.NOT_SET :
+		return \"Not set\"
+	
+	else :
+		return str(input[ BUTTON ])
+
+
+func mouse_in_use( exclude_player : int = -1 ) -> bool :
+	#Return true if the mouse is in use by a player.
+	var mouse_in_use := false
+	var at := 0
+	for p in control_schemes :
+		if( p[SCHEME_NAME].ends_with( \"mouse\" ) && 
+				exclude_player != at) :
+			mouse_in_use = true
+		
+		at += 1
+	return mouse_in_use
+
+
+func player_disconnected( player_id : int ) -> void :
+	#If I am not allowed to auto assign 
+	#a new scheme, just return.
+	if auto_assign_disconnect == false :
+		return
+	
+	#If there is joypads open, assign one of them to the
+	#player.
+	var open_joypads : Array = get_open_joypads_ids(player_id )
+	if open_joypads.empty() :
+		#Assign the highest priority scheme that is open.
+		set_control_scheme( player_id, get_open_schemes_by_priority()[0] )
+	
+	#There is an open joypad.
+	else :
+		set_control_scheme( player_id, control_schemes[ player_id ][ SCHEME_NAME ] )
+
+
+func save() -> void :
+	#Save the controls to the input file.
+	file.open( FILE_LOCATION, file.WRITE_READ )
+	file.store_line( to_json( controls ) )
+	file.store_string( to_json( control_schemes ) )
+	file.close()
+	
+	setup_input_map()
+	
+	#setup_undo_controls()
+	undo_controls.clear()
+	var at_player : int = 0
+	for player in controls :
+		undo_controls.append( [] )
+		var at_input : int = 0
+		for input in player :
+			undo_controls[at_player].append( [] )
+			for prop in input :
+				var new_prop : float = prop
+				undo_controls[at_player][at_input].append( new_prop )
+			
+			#Move onto the next input.
+			at_input += 1
+		
+		#Move onto the next player.
+		at_player += 1
+	
+#	setup_undo_schemes()
+	undo_schemes.clear()
+	at_player = 0
+	for player in control_schemes :
+		undo_schemes.append( [] )
+		var at_scheme : int = 0
+		for scheme in player :
+			var new_prop = scheme
+			undo_schemes[at_player].append( new_prop )
+		
+			#Move onto the next scheme
+			at_scheme += 1
+	
+		#Move onto the player.
+		at_player += 1
+
+
+func remove_disc_player( id ) -> void :
+	#Removes a player from the disc_players method
+	if disc_players.has( id ) :
+		var at : int = disc_players.find( id )
+		disc_players.remove( at )
+
+
+func set_control( player_id : int, new_control : Array ) -> void :
+	#Set the specified player's control.
+	#Make sure you create a completely new array
+	#instead of creating a pointer and getting bugs.
+	var new_input : Array = []
+	for input in new_control :
+		var a : Array = []
+		for i in input :
+			var new_i : int = i
+			a.append( new_i )
+		new_input.append( a )
+	controls[player_id] = new_input
+
+
+func set_control_device( player_id : int, device_id : int ) -> void :
+	#Make the specified player use the device specified.
+
+	remove_disc_player( player_id )
+	
+	var new_guid : String = Input.get_joy_guid( device_id )
+	control_schemes[ player_id ][1] = new_guid
+	control_schemes[ player_id ][2] = device_id
+	
+	#Set up input map properly.
+	var edit : Array = controls[ player_id ]
+	var id : String = str(player_id)
+	var at : int = 0
+	for play in edit :
+		var action : String = def.map[at]
+		
+		InputMap.action_erase_events( id+action )
+		var event : InputEvent
+		if play[CONTROL_NAME] == def.JOYPAD_BUTTON :
+			event = InputEventJoypadButton.new()
+			event.device = device_id
+			event.button_index = play[0]
+		
+		#The control is a motion.
+		else:
+			event = InputEventJoypadMotion.new()
+			event.device = device_id
+			event.axis = play[0]
+			event.axis_value = play[2]
+			InputMap.action_set_deadzone( id+action, play[3] )
+		
+		#Actually put the event into the InputMap.
+		InputMap.action_add_event( id+action, event )
+		
+		at += 1
+
+
+func set_control_scheme( player_id : int, type_string : String ) -> void :
+	#Determine what controller to use.
+	var scheme : Array
+	if type_string.begins_with( \"joy\" ) && control_schemes[ player_id][ SCHEME_NAME ].begins_with( \"joy\" ) :
+		#The player already has a joypad style control scheme.
+		scheme = get_template_scheme( type_string, control_schemes[ player_id ][ DEVICE_ID] )
+	else :
+		scheme = get_template_scheme( type_string )
+	set_control_scheme_using_array( player_id, scheme  )
+
+
+func set_control_scheme_using_array( player_id : int, scheme : Array ) -> void :
+	#Remove the player from disc_players if they are
+	#in it.
+	remove_disc_player( player_id )
+	
+	#Set the specified player control scheme to the passed scheme.
+	control_schemes[ player_id ] = scheme
+	
+	#Determine the valid inputs based on the default types inputs.
+	\"Not implemented yet\"
+	var valid_inputs : Array = []
+	for a in [scheme[ SCHEME_NAME ] ] :
+		if a.begins_with( \"key\" ) :
+			valid_inputs.append( def.KEYBOARD )
+		if a.begins_with( \"joy\" ) :
+			valid_inputs.append( def.JOYPAD_BUTTON )
+			valid_inputs.append( def.JOYPAD_MOTION )
+		if a.ends_with( \"mouse\" ) :
+			valid_inputs.append( def.MOUSE_BUTTON )
+	
+	#Check if undo_schemes is the same as the passed scheme.
+	#If yes, set controls to the undo_scheme.
+	if ( undo_schemes.size() > 0 &&
+			undo_schemes[ player_id ][ SCHEME_NAME ] == scheme[ SCHEME_NAME ] ) :
+		undo_scheme( player_id )
+		undo_control( player_id )
+	
+	#We have to actually go through defaults.
+	else :
+		for at_action in range( 0, action_map.size() ) :
+			input_to_default( at_action, player_id, scheme[ SCHEME_NAME ] )
+	
+	#Emit a signal letting whoever is listening know
+	#that I switched control types.
+	emit_signal( \"scheme_changed\", player_id, scheme[ SCHEME_NAME ] )
+
+
+func set_input( player_id : int, input_name : String, input : Array ) -> void :
+	#Set the specified player's input to the passed input.
+	var hi = def.map.find( input_name )
+	controls[player_id][ def.map.find( input_name ) ] = input
+
+
+func setup_input_map() -> void :
+	#Remove all the actions in the InputMap
+	var at : int = 0
+	for player in controls :
+		for action in def.map :
+			InputMap.action_erase_events( str(at) + action )
+		at += 1
+	
+	#Setup the input map.
+	at = 0
+	for player in controls :
+		var i : int = 0
+		for play in player :
+			var can_make_action : bool = true
+			var event : InputEvent = InputEvent.new()
+			if play[CONTROL_NAME] == def.KEYBOARD :
+				event = InputEventKey.new()
+				event.scancode = play[SCANCODE]
+			
+			#Joypad Motion
+			elif play[CONTROL_NAME] == def.JOYPAD_MOTION :
+				event = InputEventJoypadMotion.new()
+				event.device = control_schemes[at][DEVICE_ID]
+				event.axis_value = play[AXIS_DIR]
+				event.axis = play[AXIS]
+				#Change the deadzone of the action.
+				InputMap.action_set_deadzone( str(at)+def.map[i], play[DEADZONE] )
+			
+			#Joypad Button
+			elif play[CONTROL_NAME] == def.JOYPAD_BUTTON :
+				event = InputEventJoypadButton.new()
+				event.device = control_schemes[at][DEVICE_ID]
+				event.button_index = play[BUTTON]
+			
+			#The button is a mouse button
+			elif play[CONTROL_NAME] == def.MOUSE_BUTTON :
+				event = InputEventMouseButton.new()
+				event.button_index = play[BUTTON]
+			
+			#The scheme is invalid. Do not do anything.
+			else :
+				can_make_action = false
+			
+			#Add it to the input map and move onto the next action.
+			if can_make_action :
+				InputMap.action_add_event( str(at) + def.map[i], event )
+				
+				#If the action is set as a ui action,
+				#add it to the ui list.
+				var ui_at : int = 0
+				var start_count : int
+				for array in ui_actions.values() :
+					if array.has( def.map[i] ) :
+						#The input is inside ui_actions. Find what
+						#event I need to replace.
+						var input_name_at : int = array.find( def.map[i] )
+						var key : String = ui_actions.keys()[ui_at]
+						
+						#Look at my previous events and replace the one present
+						#if it interferes with my new event.
+						if ui_events[at][ui_at][input_name_at] != null :
+							InputMap.action_erase_event( key, ui_events[at][ui_at][input_name_at] )
+						InputMap.action_add_event( key, event )
+						
+						#Finally, update my list of ui_events.
+						ui_events[at][ui_at].insert( input_name_at, event )
+						ui_events[at][ui_at].remove( input_name_at + 1 )
+					
+					#Move onto the next ui_action.
+					ui_at += 1
+				
+			#Move onto the next action.
+			i += 1
+		
+		#Move onto the next player.
+		at += 1
+
+
+func undo_all() -> void :
+	#Undo all schemes and inputs to what they were at the last save.
+	for player_id in range( 0, player_count ) :
+		undo_control( player_id )
+		undo_scheme( player_id )
+	
+	#Tell input map to set itself up
+	setup_input_map()
+
+
+func undo_control( player_id : int ) -> void :
+	#Set controls back to what is in undo_controls.
+	#This makes copies of everything for
+	#controls to use.
+#	controls[ player_id ].clear()
+#	var at_input : int = 0
+#	for input in undo_controls[ player_id ] :
+#		controls[ player_id ].append( [] )
+#		for prop in input :
+#			var new_prop : int = prop
+#			controls[ player_id ][ at_input ].append( new_prop )
+#		at_input += 1
+	var at : int = 0
+	controls[ player_id ].clear()
+	while at < action_map.size() :
+		if is_input_in_use( undo_controls[ player_id ][ at ] ) == false :
+			controls[ player_id ].append( undo_controls[ player_id ][ at ] )
+		else :
+			controls[player_id].append( input_to_default( at, player_id, undo_schemes[ player_id ][SCHEME_NAME ] ) )          
+		at += 1
+
+
+func undo_player( player_id : int ) -> void :
+	#Undo everything about the passed player
+	#to the last save for that player.
+	undo_control( player_id )
+	undo_scheme( player_id )
+
+
+func undo_scheme( player_id : int ) -> void :
+	#Set control_schemes to what undo_schemes is.
+	#This makes copies of everything for
+	#control to use.
+	control_schemes[player_id].clear()
+	for prop in undo_schemes[ player_id ] :
+		var new_prop = prop
+		control_schemes[player_id].append( new_prop )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"
+
+[sub_resource type="GDScript" id=2]
+script/source = "\"\"\"
+ The default setup file for getting 
+ the different controllers to work.
+\"\"\"
+extends Node
+\"\"\"
+ Use @globalscope to determine what int you should use
+ to represent your desired button/axis press.
+\"\"\"
+
+#What all actions there are.
+var map : Array = [\"Confirm\", \"Cancel\", \"MoveUp\", \"MoveRight\", \"MoveDown\",\"MoveLeft\"]
+
+const INVALID = -1 #Use this to prevent this control from being set.
+const JOYPAD_BUTTON = 0
+const JOYPAD_MOTION = 1
+const KEYBOARD = 2
+const MOUSE_BUTTON = 3
+const NOT_SET = 4 #This is returned when no more default events can be found.
+
+#These constants are for verifying the integrity of
+#files.
+const verify : Array = [2, 4, 2, 2, 1]
+
+
+
+func check_return( return_array : Array, use_control : int ) -> Array :
+	#Make sure that the programmer has maps configured properly.
+	assert map.size() == return_array[ 0 ].size()
+	assert get_parent().action_map.size() == return_array[ 0 ].size()
+	
+	#Return the appropriate input array.
+	#If use_control is invalid, then return an empty
+	#array.
+	if use_control >= return_array.size() :
+		var new_array : Array = []
+		for action in range( 0, get_parent().action_map.size() ) :
+			new_array.append( [NOT_SET] )
+		return new_array
+	return return_array[ use_control ]
+
+
+#These determine what the default controls are.
+func get_keyboard( use_control : int = 0) -> Array :
+	#This will return NOT_SET if the input asked for
+	#is not available.
+	var default : Array = [
+			[
+		[KEYBOARD, 16777221], #ENTER
+		[KEYBOARD, 16777237 ], #SHIFT
+		[KEYBOARD, 87], #W
+		[KEYBOARD, 68], #D
+		[KEYBOARD, 83], #S
+		[KEYBOARD, 65] #A
+		],
+		
+		[
+		[KEYBOARD, 32 ], #SPACE
+		[KEYBOARD, 16777240 ], #ALT
+		[KEYBOARD, 16777232 ], #UP
+		[KEYBOARD, 16777233 ], #RIGHT
+		[KEYBOARD, 16777234 ], #DOWN
+		[KEYBOARD, 16777231 ] #LEFT
+		]
+	]
+	
+	return check_return( default, use_control )
+
+
+func get_joy_and_mouse(use_control : int = 0) -> Array :
+	var default : Array = []
+	return check_return( default, use_control )
+
+
+func get_joypad(use_control : int = 0) -> Array :
+	#Return the default controls for the joypad.
+	#0,JOYPAD_BUTTON
+	var default : Array = [ 
+	[
+		[JOYPAD_BUTTON, 0],
+		[JOYPAD_MOTION, 1, -1.0, 0.1],
+		[JOYPAD_MOTION, 0,  1.0, 0.1],
+		[JOYPAD_MOTION, 1, 1.0, 0.1],
+		[JOYPAD_MOTION, 0, -1.0, 0.1] 
+	]
+	]
+	
+	return check_return( default, use_control )
+
+
+func get_mouse(use_control : int = 0) -> Array :
+	var default : Array = [
+	[
+		[MOUSE_BUTTON, 1],
+		[INVALID],
+		[INVALID],
+		[INVALID],
+		[INVALID] 
+	]
+	]
+	
+	return check_return( default, use_control )
+
+
+func get_key_and_mouse(use_control : int = 0) -> Array :
+	var default : Array = [
+	[
+		[KEYBOARD, 32],
+		[INVALID],
+		[INVALID],
+		[INVALID],
+		[INVALID],
+	]
+	]
+	
+	return check_return( default, use_control )
+
+
+
+
+
+
+
+
+
+"
+
+[node name="ControlHandler" type="Node"]
+pause_mode = 2
+script = SubResource( 1 )
+
+[node name="Defaults" type="Node" parent="."]
+script = SubResource( 2 )
